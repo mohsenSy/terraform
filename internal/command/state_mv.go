@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/hashicorp/terraform/internal/addrs"
+	"github.com/hashicorp/terraform/internal/backend"
 	"github.com/hashicorp/terraform/internal/command/arguments"
 	"github.com/hashicorp/terraform/internal/command/clistate"
 	"github.com/hashicorp/terraform/internal/command/views"
@@ -40,6 +41,43 @@ func (c *StateMvCommand) Run(args []string) int {
 	if len(args) != 2 {
 		c.Ui.Error("Exactly two arguments expected.\n")
 		return cli.RunResultHelp
+	}
+
+	// If backup or backup-out flags are set
+	// and the state flag is not set, make sure
+	// the backend is local
+	backupFlagSetWithoutStateFlag := c.backupPath != "-" && c.statePath == ""
+	backupOutFlagSetWithoutStateFlag := backupPathOut != "-" && c.statePath == ""
+
+	var setLegacyLocalBackendFlags []string
+	if backupFlagSetWithoutStateFlag {
+		setLegacyLocalBackendFlags = append(setLegacyLocalBackendFlags, "-backup")
+	}
+	if backupOutFlagSetWithoutStateFlag {
+		setLegacyLocalBackendFlags = append(setLegacyLocalBackendFlags, "-backup-out")
+	}
+
+	if len(setLegacyLocalBackendFlags) > 0 {
+		currentBackend, diags := c.backendFromConfig(&BackendOpts{})
+		if diags.HasErrors() {
+			c.showDiagnostics(diags)
+			return 1
+		}
+
+		// If currentBackend is nil and diags didn't have errors,
+		// this means we have an implicit local backend
+		_, isLocalBackend := currentBackend.(backend.Local)
+		if currentBackend != nil && !isLocalBackend {
+			diags = diags.Append(
+				tfdiags.Sourceless(
+					tfdiags.Error,
+					fmt.Sprintf("Invalid command-line flags: %s", strings.Join(setLegacyLocalBackendFlags[:], ", ")),
+					"Command-line flags -backup and -backup-out are legacy options that operate on a local state file only. You must specify a local state file with the -state flag or switch to the local backend.",
+				),
+			)
+			c.showDiagnostics(diags)
+			return 1
+		}
 	}
 
 	// Read the from state
